@@ -14,7 +14,8 @@ import { useQuery } from '@tanstack/react-query'
 import { CheckIcon, ChevronLeftIcon, ShareIcon } from 'lucide-react'
 import { useLocale } from 'next-intl'
 import Image from 'next/image'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import EventBookmark from '@/app/[locale]/(platform)/event/[slug]/_components/EventBookmark'
 import EventOrderPanelForm from '@/app/[locale]/(platform)/event/[slug]/_components/EventOrderPanelForm'
 import EventOrderPanelMobile from '@/app/[locale]/(platform)/event/[slug]/_components/EventOrderPanelMobile'
@@ -39,6 +40,7 @@ import {
 import SportsLivestreamFloatingPlayer
   from '@/app/[locale]/(platform)/sports/_components/SportsLivestreamFloatingPlayer'
 import SportsRedeemModal from '@/app/[locale]/(platform)/sports/_components/SportsRedeemModal'
+import { buildMarketSlugSelectionSignature } from '@/app/[locale]/(platform)/sports/_utils/sports-event-selection'
 import SiteLogoIcon from '@/components/SiteLogoIcon'
 import { Button } from '@/components/ui/button'
 import { useCurrentTimestamp } from '@/hooks/useCurrentTimestamp'
@@ -69,6 +71,11 @@ interface SportsEventCenterProps {
   initialMarketViewKey?: SportsEventMarketViewKey | null
 }
 
+interface SportsEventQuerySelection {
+  conditionId: string | null
+  outcomeIndex: number | null
+}
+
 const SECTION_ORDER: Array<{ key: EventSectionKey, label: string }> = [
   { key: 'moneyline', label: 'Moneyline' },
   { key: 'spread', label: 'Spread' },
@@ -81,6 +88,33 @@ const headerIconButtonClass = `
   hover:bg-muted/80 focus-visible:ring-1 focus-visible:ring-ring md:h-9 md:w-9
 `
 const SPORTS_EVENT_ODDS_FORMAT_STORAGE_KEY = 'sports:event:odds-format'
+const EMPTY_QUERY_SELECTION: SportsEventQuerySelection = {
+  conditionId: null,
+  outcomeIndex: null,
+}
+
+function parseRequestedOutcomeIndex(value: string | null | undefined) {
+  const rawValue = value?.trim() ?? ''
+  const parsed = Number.parseInt(rawValue, 10)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function SportsEventQuerySync({
+  onSelectionChange,
+}: {
+  onSelectionChange: (selection: SportsEventQuerySelection) => void
+}) {
+  const searchParams = useSearchParams()
+
+  useEffect(() => {
+    onSelectionChange({
+      conditionId: searchParams.get('conditionId')?.trim() ?? null,
+      outcomeIndex: parseRequestedOutcomeIndex(searchParams.get('outcomeIndex')),
+    })
+  }, [onSelectionChange, searchParams])
+
+  return null
+}
 
 function resolvePositionShares(position: UserPosition) {
   const totalShares = typeof position.total_shares === 'number' ? position.total_shares : Number(position.size ?? 0)
@@ -701,6 +735,7 @@ export default function SportsEventCenter({
   const orderMarketConditionId = useOrder(state => state.market?.condition_id ?? null)
   const orderOutcomeIndex = useOrder(state => state.outcome?.outcome_index ?? null)
   const user = useUser()
+  const [querySelection, setQuerySelection] = useState<SportsEventQuerySelection>(EMPTY_QUERY_SELECTION)
   const [oddsFormat, setOddsFormat] = useState<OddsFormat>('price')
   const [hasLoadedOddsFormat, setHasLoadedOddsFormat] = useState(false)
   const [claimedConditionIds, setClaimedConditionIds] = useState<Record<string, true>>({})
@@ -736,6 +771,19 @@ export default function SportsEventCenter({
       ?? 'gameLines'
   }, [initialMarketViewFromSlug, initialMarketViewKey, normalizedMarketViewCards])
   const [activeMarketViewKey, setActiveMarketViewKey] = useState<SportsEventMarketViewKey>(resolvedInitialMarketViewKey)
+
+  const handleQuerySelectionChange = useCallback((nextSelection: SportsEventQuerySelection) => {
+    setQuerySelection((current) => {
+      if (
+        current.conditionId === nextSelection.conditionId
+        && current.outcomeIndex === nextSelection.outcomeIndex
+      ) {
+        return current
+      }
+
+      return nextSelection
+    })
+  }, [])
 
   const ownerAddress = useMemo(() => {
     if (user?.proxy_wallet_address && user.proxy_wallet_status === 'deployed') {
@@ -1003,6 +1051,26 @@ export default function SportsEventCenter({
   }, [activeCard, buttonByConditionAndOutcome, claimedConditionIds, detailMarketByConditionId, firstButtonByConditionId, userPositions])
 
   const marketSlugToButtonKey = useMemo(() => {
+    const requestedConditionId = querySelection.conditionId
+    const requestedOutcomeIndex = querySelection.outcomeIndex
+
+    function resolveButtonKeyForConditionId(conditionId: string) {
+      if (requestedOutcomeIndex !== null) {
+        const exactMatch = activeCard.buttons.find(button =>
+          button.conditionId === conditionId && button.outcomeIndex === requestedOutcomeIndex,
+        )
+        if (exactMatch) {
+          return exactMatch.key
+        }
+      }
+
+      return activeCard.buttons.find(button => button.conditionId === conditionId)?.key ?? null
+    }
+
+    if (requestedConditionId) {
+      return resolveButtonKeyForConditionId(requestedConditionId)
+    }
+
     if (!initialMarketSlug) {
       return null
     }
@@ -1012,9 +1080,14 @@ export default function SportsEventCenter({
       return null
     }
 
-    const matchedButton = activeCard.buttons.find(button => button.conditionId === matchedMarket.condition_id)
-    return matchedButton?.key ?? null
-  }, [activeCard.buttons, activeCard.detailMarkets, initialMarketSlug])
+    return resolveButtonKeyForConditionId(matchedMarket.condition_id)
+  }, [
+    activeCard.buttons,
+    activeCard.detailMarkets,
+    initialMarketSlug,
+    querySelection.conditionId,
+    querySelection.outcomeIndex,
+  ])
 
   const [selectedButtonBySection, setSelectedButtonBySection] = useState<Record<EventSectionKey, string | null>>({
     moneyline: null,
@@ -1036,6 +1109,7 @@ export default function SportsEventCenter({
   })
   const [tabByAuxiliaryConditionId, setTabByAuxiliaryConditionId] = useState<Record<string, DetailsTab>>({})
   const previousCardIdRef = useRef<string | null>(null)
+  const appliedMarketSlugSelectionRef = useRef<string | null>(null)
   const auxiliaryMarketCards = useMemo(() => {
     const buttonsByConditionId = new Map<string, SportsGamesButton[]>()
 
@@ -1065,9 +1139,21 @@ export default function SportsEventCenter({
   useEffect(() => {
     const isNewCard = previousCardIdRef.current !== activeCard.id
     previousCardIdRef.current = activeCard.id
+    const marketSlugSelectionSignature = buildMarketSlugSelectionSignature({
+      activeCardId: activeCard.id,
+      marketSlugToButtonKey,
+      usesSectionLayout,
+    })
+    const shouldApplyMarketSlugSelection = marketSlugSelectionSignature !== null
+      && appliedMarketSlugSelectionRef.current !== marketSlugSelectionSignature
+
+    if (!marketSlugSelectionSignature) {
+      appliedMarketSlugSelectionRef.current = null
+    }
 
     const defaultSelectedByCondition = auxiliaryMarketCards.reduce<Record<string, string | null>>((acc, entry) => {
-      const marketMatchedButton = marketSlugToButtonKey
+      const marketMatchedButton = shouldApplyMarketSlugSelection
+        && marketSlugToButtonKey
         && entry.buttons.some(button => button.key === marketSlugToButtonKey)
         ? marketSlugToButtonKey
         : null
@@ -1097,6 +1183,15 @@ export default function SportsEventCenter({
         }
       })
 
+      if (shouldApplyMarketSlugSelection && marketSlugToButtonKey) {
+        const matchedEntry = auxiliaryMarketCards.find(entry =>
+          entry.buttons.some(button => button.key === marketSlugToButtonKey),
+        )
+        if (matchedEntry) {
+          next[matchedEntry.market.condition_id] = marketSlugToButtonKey
+        }
+      }
+
       return next
     })
 
@@ -1110,17 +1205,21 @@ export default function SportsEventCenter({
       return next
     })
 
-    const marketMatchedAuxiliaryConditionId = marketSlugToButtonKey
+    const marketMatchedAuxiliaryConditionId = shouldApplyMarketSlugSelection && marketSlugToButtonKey
       ? auxiliaryMarketCards.find(entry => entry.buttons.some(button => button.key === marketSlugToButtonKey))?.market.condition_id ?? null
       : null
 
     if (!usesSectionLayout) {
-      const defaultTradeButton = marketSlugToButtonKey
+      const defaultTradeButton = (shouldApplyMarketSlugSelection ? marketSlugToButtonKey : null)
         ?? auxiliaryMarketCards[0]?.buttons[0]?.key
         ?? resolveDefaultConditionId(activeCard)
 
       setActiveTradeButtonKey((current) => {
-        if (marketSlugToButtonKey && activeCard.buttons.some(button => button.key === marketSlugToButtonKey)) {
+        if (
+          shouldApplyMarketSlugSelection
+          && marketSlugToButtonKey
+          && activeCard.buttons.some(button => button.key === marketSlugToButtonKey)
+        ) {
           return marketSlugToButtonKey
         }
 
@@ -1147,6 +1246,9 @@ export default function SportsEventCenter({
 
         return null
       })
+      if (marketSlugSelectionSignature) {
+        appliedMarketSlugSelectionRef.current = marketSlugSelectionSignature
+      }
       return
     }
 
@@ -1162,7 +1264,7 @@ export default function SportsEventCenter({
       defaultSelectedBySection[section.key] = firstButton?.key ?? null
     }
 
-    if (marketSlugToButtonKey) {
+    if (shouldApplyMarketSlugSelection && marketSlugToButtonKey) {
       const marketButton = activeCard.buttons.find(button => button.key === marketSlugToButtonKey)
       if (marketButton && isEventSectionKey(marketButton.marketType)) {
         defaultSelectedBySection[marketButton.marketType] = marketButton.key
@@ -1190,10 +1292,17 @@ export default function SportsEventCenter({
         }
       }
 
+      if (shouldApplyMarketSlugSelection && marketSlugToButtonKey) {
+        const marketButton = activeCard.buttons.find(button => button.key === marketSlugToButtonKey)
+        if (marketButton && isEventSectionKey(marketButton.marketType)) {
+          next[marketButton.marketType] = marketButton.key
+        }
+      }
+
       return next
     })
 
-    const defaultTradeButton = marketSlugToButtonKey
+    const defaultTradeButton = (shouldApplyMarketSlugSelection ? marketSlugToButtonKey : null)
       ?? defaultSelectedBySection.moneyline
       ?? defaultSelectedBySection.spread
       ?? defaultSelectedBySection.total
@@ -1201,7 +1310,7 @@ export default function SportsEventCenter({
       ?? resolveDefaultConditionId(activeCard)
 
     setActiveTradeButtonKey((current) => {
-      if (marketSlugToButtonKey) {
+      if (shouldApplyMarketSlugSelection && marketSlugToButtonKey) {
         const matchesMarketSlug = activeCard.buttons.some(button => button.key === marketSlugToButtonKey)
         if (matchesMarketSlug) {
           return marketSlugToButtonKey
@@ -1238,6 +1347,9 @@ export default function SportsEventCenter({
 
       return null
     })
+    if (marketSlugSelectionSignature) {
+      appliedMarketSlugSelectionRef.current = marketSlugSelectionSignature
+    }
   }, [
     activeCard,
     activeCard.id,
@@ -1270,11 +1382,11 @@ export default function SportsEventCenter({
   const activeTradeContext = useMemo(() => {
     const candidateKeys = usesSectionLayout
       ? [
-          fallbackButtonFromOrderState,
           activeTradeButtonKey,
           openSectionKey ? selectedButtonBySection[openSectionKey] : null,
           openAuxiliaryConditionId ? selectedAuxiliaryButtonByConditionId[openAuxiliaryConditionId] : null,
           marketSlugToButtonKey,
+          fallbackButtonFromOrderState,
           auxiliaryMarketCards[0]?.buttons[0]?.key ?? null,
           moneylineButtonKey,
           selectedButtonBySection.spread,
@@ -1283,10 +1395,10 @@ export default function SportsEventCenter({
           resolveDefaultConditionId(activeCard),
         ]
       : [
-          fallbackButtonFromOrderState,
           activeTradeButtonKey,
           openAuxiliaryConditionId ? selectedAuxiliaryButtonByConditionId[openAuxiliaryConditionId] : null,
           marketSlugToButtonKey,
+          fallbackButtonFromOrderState,
           auxiliaryMarketCards[0]?.buttons[0]?.key ?? null,
           resolveDefaultConditionId(activeCard),
         ]
@@ -1332,6 +1444,10 @@ export default function SportsEventCenter({
   ])
 
   useEffect(() => {
+    if (marketSlugToButtonKey) {
+      return
+    }
+
     if (!fallbackButtonFromOrderState) {
       return
     }
@@ -1377,7 +1493,7 @@ export default function SportsEventCenter({
         [matchedButton.conditionId]: matchedButton.key,
       }
     })
-  }, [activeCard.buttons, fallbackButtonFromOrderState, usesSectionLayout])
+  }, [activeCard.buttons, fallbackButtonFromOrderState, marketSlugToButtonKey, usesSectionLayout])
 
   const activeTradeHeaderContext = useMemo(() => {
     if (!activeTradeContext) {
@@ -1418,16 +1534,32 @@ export default function SportsEventCenter({
     return resolveStableSpreadPrimaryOutcomeIndex(activeCard, activeTradeContext.button.conditionId)
   }, [activeCard, activeTradeContext])
 
+  const activeTradeContextButtonKey = activeTradeContext?.button.key ?? null
+
   useEffect(() => {
-    if (!activeTradeContext) {
+    if (!activeTradeContextButtonKey) {
+      return
+    }
+
+    const button = resolveSelectedButton(activeCard, activeTradeContextButtonKey)
+    const market = resolveSelectedMarket(activeCard, activeTradeContextButtonKey)
+    const outcome = resolveSelectedOutcome(market, button)
+    if (!button || !market || !outcome) {
       return
     }
 
     setOrderEvent(activeCard.event)
-    setOrderMarket(activeTradeContext.market)
-    setOrderOutcome(activeTradeContext.outcome)
+    setOrderMarket(market)
+    setOrderOutcome(outcome)
     setOrderSide(ORDER_SIDE.BUY)
-  }, [activeCard.event, activeTradeContext, setOrderEvent, setOrderMarket, setOrderOutcome, setOrderSide])
+  }, [
+    activeCard,
+    activeTradeContextButtonKey,
+    setOrderEvent,
+    setOrderMarket,
+    setOrderOutcome,
+    setOrderSide,
+  ])
 
   const sectionVolumes = useMemo(() => {
     const byConditionId = new Map(activeCard.detailMarkets.map(market => [market.condition_id, market] as const))
@@ -2186,6 +2318,9 @@ export default function SportsEventCenter({
 
   return (
     <>
+      <Suspense fallback={null}>
+        <SportsEventQuerySync onSelectionChange={handleQuerySelectionChange} />
+      </Suspense>
       <div className="
         min-[1200px]:grid min-[1200px]:h-full min-[1200px]:grid-cols-[minmax(0,1fr)_21.25rem] min-[1200px]:gap-6
       "
