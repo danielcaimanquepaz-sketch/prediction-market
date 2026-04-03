@@ -9,10 +9,10 @@ import { EventRepository } from '@/lib/db/queries/event'
 import { SportsMenuRepository } from '@/lib/db/queries/sports-menu'
 
 export const metadata: Metadata = {
-  title: 'Sports Live',
+  title: 'Sports Upcoming',
 }
 
-export default async function SportsLivePage({ params }: { params: Promise<{ locale: string }> }) {
+export default async function SportsSoonPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params
   setRequestLocale(locale)
   const [{ data: events }, { data: layoutData }] = await Promise.all([
@@ -31,12 +31,12 @@ export default async function SportsLivePage({ params }: { params: Promise<{ loc
   const cards = buildSportsGamesCards(events ?? [])
 
   return (
-    <div key="sports-live-page" className="contents">
+    <div key="sports-soon-page" className="contents">
       <SportsGamesCenter
         cards={cards}
-        sportSlug="live"
-        sportTitle="Live"
-        pageMode="liveAndSoon"
+        sportSlug="soon"
+        sportTitle="Upcoming Sports Games"
+        pageMode="soon"
         categoryTitleBySlug={layoutData?.h1TitleBySlug ?? {}}
         vertical="sports"
       />
